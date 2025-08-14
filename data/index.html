@@ -5,10 +5,8 @@
   <meta charset="utf-8" />
   <title>Espresso Controls</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-
   <!-- Preload background served by /bg -->
   <link rel="preload" as="image" href="/bg" fetchpriority="high" />
-
   <style>
     :root {
       --gap: 12px;
@@ -52,7 +50,6 @@
       gap: var(--gap);
     }
 
-    /* Uniform button style (real buttons + label "btn") — all bold */
     button,
     .btn {
       padding: 14px 16px;
@@ -62,7 +59,6 @@
       background: #007bff;
       color: #fff;
       font-size: 16px;
-      font-weight: 0;
       line-height: 1.25;
       min-height: 48px;
       width: 100%;
@@ -79,14 +75,12 @@
       transform: translateY(1px);
     }
 
-    /* Section divider between controls and background uploader */
     .section {
       margin-top: calc(var(--gap) * 2);
       padding-top: calc(var(--gap) * 1.5);
       border-top: 1px solid rgba(0, 0, 0, 0.08);
     }
 
-    /* Centered, stacked uploader controls */
     .uploader {
       display: flex;
       flex-direction: column;
@@ -98,7 +92,6 @@
       display: none;
     }
 
-    /* hide native input; label will trigger it */
     .file-hint {
       font-size: 12px;
       color: #333;
@@ -109,6 +102,67 @@
     .full {
       grid-column: 1 / -1;
     }
+
+    /* Spinner */
+    .loader {
+      width: 20px;
+      height: 20px;
+      border: 2px solid #f3f3f3;
+      border-top: 2px solid #007bff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      display: inline-block;
+      margin-right: 8px;
+      margin-top: 20px;
+    }
+
+    @keyframes spin {
+      0% {
+        transform: rotate(0deg)
+      }
+
+      100% {
+        transform: rotate(360deg)
+      }
+    }
+
+    .loading-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #007bff;
+      font-size: 14px;
+    }
+
+    #status.err {
+      color: #b00020;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body {
+        background-color: #121212;
+        /* fallback behind /bg */
+        color: #eee;
+      }
+
+      .container {
+        background: rgba(40, 40, 40, 0.65);
+        border-color: rgba(255, 255, 255, 0.2);
+      }
+
+      h1 {
+        color: #f0f0f0;
+      }
+
+      button,
+      .btn {
+        background: #2196f3;
+        color: #fff;
+      }
+
+      .file-hint {
+        color: #ccc;
+      }
   </style>
 </head>
 
@@ -122,11 +176,12 @@
       <button onclick="call('/jog_reverse')">Jog Backward</button>
     </div>
 
-    <!-- Separator + uploader -->
+    <!-- Background uploader -->
     <div class="section uploader">
+      <!-- iOS: constrain to jpeg/webp to avoid HEIC pipeline issues -->
       <input type="file" id="bgFile" accept="image/webp,image/jpeg" />
       <label for="bgFile" class="btn">Choose Background</label>
-      <button id="uploadBtn" onclick="uploadBg()" style="display: none;">Set Background</button>
+      <button id="uploadBtn" onclick="uploadBg()" style="display:none;">Set Background</button>
       <div id="fileName" class="file-hint"></div>
     </div>
 
@@ -138,222 +193,189 @@
     const fileNameEl = document.getElementById('fileName');
     const bgInput = document.getElementById('bgFile');
     const uploadBtn = document.getElementById('uploadBtn');
-    const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB in bytes
-    const TARGET_SIZE = 150 * 1024; // Reduce to 150KB target for even faster uploads
-    const MAX_DIMENSION = 1920; // Max width or height
 
-    function formatFileSize(bytes) {
-      if (bytes === 0) return '0 B';
-      const k = 1024;
-      const sizes = ['B', 'KB', 'MB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB cap
+    const TARGET_SIZE = 150 * 1024;        // aim for ~150 KB
+    const MAX_DIMENSION = 1920;            // max width/height
+
+    /* ---------- small helpers ---------- */
+    const fmtSize = b => (b === 0 ? '0 B' : (() => {
+      const k = 1024, u = ['B', 'KB', 'MB']; const i = Math.floor(Math.log(b) / Math.log(k));
+      return (b / Math.pow(k, i)).toFixed(1).replace(/\.0$/, '') + ' ' + u[i];
+    })());
+    const dims = (w, h, max) => (w <= max && h <= max) ? { width: w, height: h } :
+      (w > h) ? { width: max, height: Math.round(max * (h / w)) } :
+        { width: Math.round(max * (w / h)), height: max };
+
+    const setErr = msg => { statusEl.textContent = msg; statusEl.classList.add('err'); };
+    const clearUI = () => { statusEl.textContent = ''; statusEl.classList.remove('err'); };
+
+    /* ---------- aggressive but iOS-safe image processing ---------- */
+
+    // Promise wrapper for toBlob
+    const toBlobP = (canvas, type, quality) =>
+      new Promise(resolve => canvas.toBlob(resolve, type, quality));
+
+    // Downscale helper (factor < 1 shrinks)
+    function downscaleCanvas(srcCanvas, factor = 0.9) {
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(srcCanvas.width * factor));
+      c.height = Math.max(1, Math.round(srcCanvas.height * factor));
+      c.getContext('2d').drawImage(srcCanvas, 0, 0, c.width, c.height);
+      return c;
     }
 
-    function calculateNewDimensions(width, height, maxDimension) {
-      if (width <= maxDimension && height <= maxDimension) {
-        return { width, height };
+    // Binary-search quality toward TARGET_SIZE
+    async function fitByQuality(canvas, mime, target, qMin = 0.2, qMax = 0.85, steps = 6) {
+      let low = qMin, high = qMax, best = null;
+      for (let i = 0; i < steps; i++) {
+        const q = (low + high) / 2;
+        const blob = await toBlobP(canvas, mime, q);
+        if (!blob) return { best, hit: false }; // encoder unsupported (e.g., WebP on some iOS)
+        if (!best || blob.size < best.size) best = blob;
+
+        if (blob.size <= target) {
+          // We hit the target — try going lower (smaller) still
+          high = q;
+        } else {
+          // Too big — increase quality (which increases size)
+          low = q;
+        }
       }
-      
-      const aspectRatio = width / height;
-      if (width > height) {
-        return {
-          width: maxDimension,
-          height: Math.round(maxDimension / aspectRatio)
-        };
-      } else {
-        return {
-          width: Math.round(maxDimension * aspectRatio),
-          height: maxDimension
-        };
-      }
+      return { best, hit: !!best && best.size <= target };
     }
 
     function processImage(file) {
       return new Promise((resolve, reject) => {
         const img = new Image();
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        
-        img.onload = function() {
-          // Calculate new dimensions
-          const newDim = calculateNewDimensions(img.width, img.height, MAX_DIMENSION);
-          canvas.width = newDim.width;
-          canvas.height = newDim.height;
-          
-          // Draw resized image
-          ctx.drawImage(img, 0, 0, newDim.width, newDim.height);
-          
-          // Try WebP first, then JPEG if WebP is larger
-          let bestBlob = null;
-          let bestFormat = '';
-          let attempts = 0;
-          const maxAttempts = 8;
-          
-          const tryCompress = (format, quality) => {
-            canvas.toBlob(blob => {
-              if (!blob) {
-                if (attempts === 0) {
-                  // Try JPEG if WebP failed
-                  tryCompress('image/jpeg', 0.8);
-                } else {
-                  reject(new Error('Failed to process image'));
-                }
-                return;
+        const url = URL.createObjectURL(file);
+
+        img.onload = async () => {
+          try {
+            // Initial resize to MAX_DIMENSION
+            const { width, height } = dims(img.width, img.height, MAX_DIMENSION);
+            let canvas = document.createElement('canvas');
+            canvas.width = width; canvas.height = height;
+            canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+
+            // Probe WebP once; if null, switch primary to JPEG immediately (iOS-safe)
+            let primaryMime = 'image/webp';
+            const probeWebp = await toBlobP(canvas, 'image/webp', 0.8);
+            if (!probeWebp) primaryMime = 'image/jpeg';
+
+            const MAX_DOWNSCALES = 3;
+            let bestOverall = null;
+
+            for (let d = 0; d <= MAX_DOWNSCALES; d++) {
+              // 1) Primary mime pass (binary search)
+              const p1 = await fitByQuality(canvas, primaryMime, TARGET_SIZE);
+              if (p1.best && (!bestOverall || p1.best.size < bestOverall.size)) bestOverall = p1.best;
+              if (p1.hit) { resolve(bestOverall); return; }
+
+              // 2) Alternate mime pass (only if encoder exists)
+              const altMime = (primaryMime === 'image/webp') ? 'image/jpeg' : 'image/webp';
+              const altProbe = await toBlobP(canvas, altMime, 0.8);
+              if (altProbe) {
+                const p2 = await fitByQuality(canvas, altMime, TARGET_SIZE);
+                if (p2.best && (!bestOverall || p2.best.size < bestOverall.size)) bestOverall = p2.best;
+                if (p2.hit) { resolve(bestOverall); return; }
               }
-              
-              attempts++;
-              
-              // Keep track of the best (smallest) result
-              if (!bestBlob || blob.size < bestBlob.size) {
-                bestBlob = blob;
-                bestFormat = format;
-              }
-              
-              // If we hit target size, use it
-              if (blob.size <= TARGET_SIZE) {
-                resolve(bestBlob);
-                return;
-              }
-              
-              // If we've tried enough and have a result, use the best one
-              if (attempts >= maxAttempts) {
-                resolve(bestBlob);
-                return;
-              }
-              
-              // Try lower quality
-              const newQuality = quality - 0.1;
-              if (newQuality >= 0.3) {
-                tryCompress(format, newQuality);
-              } else if (format === 'image/webp') {
-                // Switch to JPEG if WebP isn't working well
-                tryCompress('image/jpeg', 0.8);
-              } else {
-                resolve(bestBlob);
-              }
-            }, format, quality);
-          };
-          
-          // Start with WebP
-          tryCompress('image/webp', 0.8);
+
+              // 3) If still too big, shrink dimensions 10% and try again
+              if (d < MAX_DOWNSCALES) canvas = downscaleCanvas(canvas, 0.9);
+            }
+
+            // Nothing met target — return smallest we got
+            if (bestOverall) resolve(bestOverall);
+            else reject(new Error('Failed to process image'));
+          } catch (e) {
+            reject(e);
+          } finally {
+            // Keep URL alive during processing; revoking early can trip iOS.
+            // URL.revokeObjectURL(url);
+          }
         };
-        
-        img.onerror = () => reject(new Error('Failed to load image'));
-        img.src = URL.createObjectURL(file);
+
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Failed to load image')); };
+        img.src = url;
       });
     }
 
-    function validateFileSize(file) {
-      if (file.size > MAX_FILE_SIZE) {
-        fail(`File too large! ${formatFileSize(file.size)} exceeds 2MB limit.`);
-        bgInput.value = ''; // Clear the input
-        fileNameEl.textContent = '';
-        uploadBtn.style.display = 'none';
-        return false;
-      }
-      return true;
+    /* ---------- UI state ---------- */
+    function resetUploadUI() {
+      bgInput.value = '';
+      uploadBtn.style.display = 'none';
+      fileNameEl.textContent = '';
+      delete bgInput.processedFile;
     }
-
-    function validateFileSize(file) {
-      if (file.size > MAX_FILE_SIZE) {
-        fail(`File too large! ${formatFileSize(file.size)} exceeds 2MB limit.`);
-        bgInput.value = ''; // Clear the input
-        fileNameEl.textContent = '';
-        uploadBtn.style.display = 'none';
-        return false;
-      }
-      return true;
-    }
-
-    bgInput.addEventListener('change', async () => {
-      const file = bgInput.files[0];
-      if (file) {
-        if (validateFileSize(file)) {
-          fileNameEl.textContent = `Processing ${file.name} (${formatFileSize(file.size)})...`;
-          uploadBtn.style.display = 'none'; // Hide button during processing
-          
-          try {
-            const processedBlob = await processImage(file);
-            
-            // Store processed blob for upload
-            bgInput.processedFile = processedBlob;
-            
-            const format = processedBlob.type.includes('webp') ? 'WebP' : 'JPEG';
-            fileNameEl.textContent = `Ready: ${file.name} → ${formatFileSize(processedBlob.size)} ${format}`;
-            uploadBtn.style.display = 'inline-flex';
-            statusEl.textContent = ''; // Clear any previous error messages
-          } catch (error) {
-            fail('Failed to process image: ' + error.message);
-            bgInput.value = '';
-            fileNameEl.textContent = '';
-            uploadBtn.style.display = 'none';
-          }
-        }
+    function setBusy(busy, showText = false) {
+      document.querySelectorAll('button:not(#uploadBtn), .btn').forEach(b => b.disabled = busy);
+      if (busy) {
+        statusEl.classList.remove('err');
+        statusEl.innerHTML = `<div class="loading-container"><div class="loader"></div></div>`;
       } else {
-        fileNameEl.textContent = '';
-        uploadBtn.style.display = 'none';
-        delete bgInput.processedFile;
+        statusEl.innerHTML = '';
+      }
+    }
+
+    /* ---------- events ---------- */
+    bgInput.addEventListener('change', async () => {
+      const file = bgInput.files && bgInput.files[0];
+      if (!file) { resetUploadUI(); return; }
+
+      if (file.size > MAX_FILE_SIZE) {
+        setErr(`File too large! ${fmtSize(file.size)} exceeds 2MB limit.`);
+        resetUploadUI(); return;
+      }
+
+      fileNameEl.textContent = `Processing ${file.name} (${fmtSize(file.size)})...`;
+      uploadBtn.style.display = 'none';
+
+      try {
+        const blob = await processImage(file);
+        bgInput.processedFile = blob;
+        const isWebP = blob.type && blob.type.includes('webp');
+        fileNameEl.textContent = `Ready: ${file.name} → ${fmtSize(blob.size)} ${isWebP ? 'WebP' : 'JPEG'}`;
+        uploadBtn.style.display = 'inline-flex';
+        clearUI();
+      } catch (e) {
+        setErr('Failed to process image: ' + e.message);
+        resetUploadUI();
       }
     });
 
     async function call(path) {
-      setBusy(true, 'Working...');
-      try {
-        const res = await fetch(path, { cache: 'no-store' });
-        const text = await res.text();
-        ok(text || 'OK');
-      } catch (e) {
-        fail('Error: ' + (e?.message || e));
-      } finally {
-        setBusy(false);
-      }
+      try { await fetch(path, { cache: 'no-store' }); }
+      catch (e) { setErr('Error: ' + (e && e.message ? e.message : e)); }
     }
 
     async function uploadBg() {
-      const processedFile = bgInput.processedFile;
-      if (!processedFile) { 
-        fail('No processed file ready'); 
-        return; 
-      }
+      const blob = bgInput.processedFile;
+      if (!blob) { setErr('No processed file ready'); return; }
 
-      setBusy(true, 'Uploading optimized image...');
+      setBusy(true, true);
       try {
         const fd = new FormData();
-        const filename = processedFile.type.includes('webp') ? 'background.webp' : 'background.jpg';
-        fd.append('bg', processedFile, filename);
-        
-        const res = await fetch('/upload_bg', { 
-          method: 'POST', 
-          body: fd,
-          // Optimize for faster uploads
-          cache: 'no-store',
-          keepalive: false,
-          // Don't set Content-Type - let browser set multipart boundary
-        });
-        
-        const text = await res.text();
+        const isWebP = blob.type && blob.type.includes('webp');
+        fd.append('bg', blob, isWebP ? 'background.webp' : 'background.jpg');
+
+        const res = await fetch('/upload_bg', { method: 'POST', body: fd, cache: 'no-store' });
+
         if (res.ok) {
+          // Silent success: refresh background, clear UI, remove loader
           document.body.style.backgroundImage = `url('/bg?ts=${Date.now()}')`;
-          ok(text || 'Background updated');
+          resetUploadUI();
+          statusEl.innerHTML = '';
         } else {
-          fail(text || `Upload failed (${res.status})`);
+          const msg = await res.text().catch(() => '');
+          setErr(msg || `Upload failed (${res.status})`);
         }
-      } catch (e) {
-        fail('Upload error');
+      } catch {
+        setErr('Upload error');
       } finally {
         setBusy(false);
       }
     }
-
-    function setBusy(busy, msg = '') {
-      document.querySelectorAll('button:not(#uploadBtn), .btn').forEach(b => b.disabled = busy);
-      // Don't disable upload button during setBusy - visibility is controlled by file validation
-      statusEl.textContent = msg;
-      if (!busy && msg) setTimeout(() => statusEl.textContent = '', 1500);
-    }
-    function ok(msg) { statusEl.style.color = '#2c7a2c'; statusEl.textContent = msg; }
-    function fail(msg) { statusEl.style.color = '#b00020'; statusEl.textContent = msg; }
   </script>
 </body>
 
