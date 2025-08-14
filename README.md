@@ -4,7 +4,6 @@
 ![Platform](https://img.shields.io/badge/platform-ESP8266-blue.svg)
 ![Framework](https://img.shields.io/badge/framework-Arduino%20%2B%20PlatformIO-orange)
 ![FS](https://img.shields.io/badge/filesystem-LittleFS-lightgrey)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Last commit](https://img.shields.io/github/last-commit/OddyTD/Espresso-Machine-Toggler)
 ![Repo size](https://img.shields.io/github/repo-size/OddyTD/Espresso-Machine-Toggler)
 
@@ -29,6 +28,7 @@ Control an espresso machine servo from any device on your LAN via a simple web p
 ---
 
 ## 📁 Project Structure
+```text
 .
 ├─ include/
 │  ├─ globals.hpp
@@ -43,6 +43,7 @@ Control an espresso machine servo from any device on your LAN via a simple web p
 │  ├─ index.html
 │  └─ bg.webp / bg.jpg
 └─ platformio.ini
+```
 
 ---
 
