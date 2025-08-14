@@ -2,11 +2,12 @@
 #include "globals.hpp"
 #include <FS.h> // File type on ESP8266
 
-// Upload state + 256 KB cap
+// Upload state + 500 KB cap for ESP8266 safety
 static File upFile;
-static String upTarget; // final path (/bg_user.webp or /bg_user.jpg)
+static String upTarget;
 static size_t upSize = 0;
-static const size_t BG_MAX_BYTES = 256 * 1024;
+static bool upTooLarge = false;
+static const size_t BG_MAX_BYTES = 500 * 1024; // 500 KB (safer for ESP8266)
 
 WebServerConfig::WebServerConfig() : server(80) {}
 
@@ -84,57 +85,96 @@ void WebServerConfig::begin()
 
   // --- 3) Upload endpoint: POST /upload_bg (multipart/form-data) ---
   server.on("/upload_bg", HTTP_POST,
-            // finished
+            // ---- finished (success or fail) ----
             [this]()
             {
     if (upFile) upFile.close();
 
     // No file / wrong type
     if (upTarget.isEmpty()) {
-      LittleFS.remove("/bg_user.tmp");
+      if (LittleFS.exists("/bg_user.tmp")) LittleFS.remove("/bg_user.tmp");
       server.send(415, "text/plain", "Unsupported type. Use .webp or .jpg");
-      upSize = 0; return;
+      upSize = 0; upTooLarge = false; return;
     }
 
-    // Too large
-    if (upSize > BG_MAX_BYTES) {
-      LittleFS.remove("/bg_user.tmp");
-      server.send(413, "text/plain", "File too large. Max 256 KB.");
-      upSize = 0; upTarget = ""; return;
+    // Too large - ESP8266 protection
+    if (upTooLarge || upSize > BG_MAX_BYTES) {
+      if (LittleFS.exists("/bg_user.tmp")) LittleFS.remove("/bg_user.tmp");
+      server.sendHeader("Connection", "close"); // nudge some clients to finish
+      server.send(413, "text/plain", "File too large. Max 500 KB for ESP8266 safety.");
+      Serial.printf("[UPLOAD] REJECTED: %u bytes exceeds 500KB limit\n", (unsigned)upSize);
+      upSize = 0; upTarget = ""; upTooLarge = false; return;
     }
 
     // Success: atomically replace existing
     if (LittleFS.exists(upTarget)) LittleFS.remove(upTarget);
     LittleFS.rename("/bg_user.tmp", upTarget);
     server.send(200, "text/plain", "Background updated (" + String(upSize) + " bytes).");
+    Serial.printf("[UPLOAD] SUCCESS: %u bytes saved as %s\n", (unsigned)upSize, upTarget.c_str());
 
-    // reset
-    upSize = 0; upTarget = ""; },
-            // chunked upload
+    // reset state
+    upSize = 0; upTarget = ""; upTooLarge = false; },
+
+            // ---- chunked upload ----
             [this]()
             {
     HTTPUpload& u = server.upload();
 
     if (u.status == UPLOAD_FILE_START) {
-      upSize = 0;
-      upTarget = "";  // unknown until we inspect extension
-      String fn = u.filename; fn.toLowerCase();
+      // Check Content-Length header for early rejection
+      if (server.hasHeader("Content-Length")) {
+        int contentLength = server.header("Content-Length").toInt();
+        if (contentLength > (int)BG_MAX_BYTES) {
+          Serial.printf("[UPLOAD] EARLY REJECT: Content-Length %d > 500KB\n", contentLength);
+          upTooLarge = true;
+          upTarget = ""; // Clear target to trigger rejection
+          return; // Don't even start processing
+        }
+      }
 
-      if (fn.endsWith(".webp"))      upTarget = "/bg_user.webp";
-      else if (fn.endsWith(".jpg") || fn.endsWith(".jpeg"))
-                                   upTarget = "/bg_user.jpg";
-      // open temp only if type ok
-      if (!upTarget.isEmpty()) upFile = LittleFS.open("/bg_user.tmp", "w");
+      upFile = File();
+      upSize = 0;
+      upTooLarge = false;
+      upTarget = "";
+
+      String fn = u.filename; fn.toLowerCase();
+      if (fn.endsWith(".webp"))                         upTarget = "/bg_user.webp";
+      else if (fn.endsWith(".jpg") || fn.endsWith(".jpeg")) upTarget = "/bg_user.jpg";
+
+      // open temp only if type ok and not already rejected
+      if (!upTarget.isEmpty() && !upTooLarge) {
+        upFile = LittleFS.open("/bg_user.tmp", "w");
+        Serial.printf("[UPLOAD] START: %s -> temp (max 500KB)\n", u.filename.c_str());
+      } else {
+        Serial.printf("[UPLOAD] REJECTED: %s (unsupported or too large)\n", u.filename.c_str());
+      }
     }
     else if (u.status == UPLOAD_FILE_WRITE) {
-      upSize += u.currentSize;                         // track total size
-      if (upFile && upSize <= BG_MAX_BYTES) {
-        upFile.write(u.buf, u.currentSize);            // write while under cap
+      // Always track size; even if we stop writing, finalizer will decide
+      upSize += u.currentSize;
+
+      // If we crossed the cap, stop writing further and mark it
+      if (!upTooLarge && upSize > BG_MAX_BYTES) {
+        upTooLarge = true;
+        Serial.printf("[UPLOAD] SIZE LIMIT HIT: %u bytes > 500KB, stopping write\n", (unsigned)upSize);
+        if (upFile) { upFile.close(); }
+        // keep consuming the rest of the chunks; we'll reply 413 at finish
       }
-      // (if over cap, we just stop writing; finalizer will delete tmp)
+
+      // Only write if within cap and file is open
+      if (!upTooLarge && upFile) {
+        // Write in larger chunks for better performance
+        size_t written = upFile.write(u.buf, u.currentSize);
+        if (written != u.currentSize) {
+          Serial.println(F("[UPLOAD] Write error - filesystem full?"));
+          upTooLarge = true;
+          upFile.close();
+        }
+      }
     }
     else if (u.status == UPLOAD_FILE_END) {
       if (upFile) upFile.close();
+      Serial.printf("[UPLOAD] END: %u bytes total (ESP8266 limit: 500KB)\n", (unsigned)upSize);
     } });
 
   // --- 4) Serve index.html with no-cache (so UI edits show immediately) ---
@@ -158,7 +198,7 @@ void WebServerConfig::begin()
     server.send(404, "text/plain", "Not found: " + server.uri()); });
 
   server.begin();
-  Serial.println(F("[WEBSERVER] Web Server started!"));
+  Serial.println(F("[WEBSERVER] Web Server started! Upload limit: 500KB"));
 }
 
 void WebServerConfig::handleClient()

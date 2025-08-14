@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html>
+
 <head>
   <meta charset="utf-8" />
   <title>Espresso Controls</title>
@@ -9,9 +10,16 @@
   <link rel="preload" as="image" href="/bg" fetchpriority="high" />
 
   <style>
-    :root { --gap: 12px; --page-pad: clamp(12px, 4vw, 24px); }
+    :root {
+      --gap: 12px;
+      --page-pad: clamp(12px, 4vw, 24px);
+    }
 
-    html, body { height: 100%; }
+    html,
+    body {
+      height: 100%;
+    }
+
     body {
       margin: 0;
       padding: var(--page-pad);
@@ -31,7 +39,12 @@
       border: 1px solid rgba(255, 255, 255, 0.6);
     }
 
-    h1 { margin: 0 0 18px; font-size: 22px; color: #333; text-align: center; }
+    h1 {
+      margin: 0 0 18px;
+      font-size: 22px;
+      color: #333;
+      text-align: center;
+    }
 
     .grid {
       display: grid;
@@ -39,8 +52,9 @@
       gap: var(--gap);
     }
 
-    /* Uniform button style (real buttons + label “btn”) — all bold */
-    button, .btn {
+    /* Uniform button style (real buttons + label "btn") — all bold */
+    button,
+    .btn {
       padding: 14px 16px;
       border: 0;
       border-radius: 10px;
@@ -59,7 +73,11 @@
       transition: filter .15s ease, transform .02s;
       text-align: center;
     }
-    button:active, .btn:active { transform: translateY(1px); }
+
+    button:active,
+    .btn:active {
+      transform: translateY(1px);
+    }
 
     /* Section divider between controls and background uploader */
     .section {
@@ -75,7 +93,12 @@
       align-items: center;
       gap: var(--gap);
     }
-    #bgFile { display: none; }        /* hide native input; label will trigger it */
+
+    #bgFile {
+      display: none;
+    }
+
+    /* hide native input; label will trigger it */
     .file-hint {
       font-size: 12px;
       color: #333;
@@ -83,7 +106,9 @@
       opacity: 0.9;
     }
 
-    .full { grid-column: 1 / -1; }
+    .full {
+      grid-column: 1 / -1;
+    }
   </style>
 </head>
 
@@ -101,7 +126,7 @@
     <div class="section uploader">
       <input type="file" id="bgFile" accept="image/webp,image/jpeg" />
       <label for="bgFile" class="btn">Choose Background</label>
-      <button onclick="uploadBg()">Set Background</button>
+      <button id="uploadBtn" onclick="uploadBg()" style="display: none;">Set Background</button>
       <div id="fileName" class="file-hint"></div>
     </div>
 
@@ -112,9 +137,164 @@
     const statusEl = document.getElementById('status');
     const fileNameEl = document.getElementById('fileName');
     const bgInput = document.getElementById('bgFile');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB in bytes
+    const TARGET_SIZE = 150 * 1024; // Reduce to 150KB target for even faster uploads
+    const MAX_DIMENSION = 1920; // Max width or height
 
-    bgInput.addEventListener('change', () => {
-      fileNameEl.textContent = bgInput.files[0] ? bgInput.files[0].name : '';
+    function formatFileSize(bytes) {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function calculateNewDimensions(width, height, maxDimension) {
+      if (width <= maxDimension && height <= maxDimension) {
+        return { width, height };
+      }
+      
+      const aspectRatio = width / height;
+      if (width > height) {
+        return {
+          width: maxDimension,
+          height: Math.round(maxDimension / aspectRatio)
+        };
+      } else {
+        return {
+          width: Math.round(maxDimension * aspectRatio),
+          height: maxDimension
+        };
+      }
+    }
+
+    function processImage(file) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        img.onload = function() {
+          // Calculate new dimensions
+          const newDim = calculateNewDimensions(img.width, img.height, MAX_DIMENSION);
+          canvas.width = newDim.width;
+          canvas.height = newDim.height;
+          
+          // Draw resized image
+          ctx.drawImage(img, 0, 0, newDim.width, newDim.height);
+          
+          // Try WebP first, then JPEG if WebP is larger
+          let bestBlob = null;
+          let bestFormat = '';
+          let attempts = 0;
+          const maxAttempts = 8;
+          
+          const tryCompress = (format, quality) => {
+            canvas.toBlob(blob => {
+              if (!blob) {
+                if (attempts === 0) {
+                  // Try JPEG if WebP failed
+                  tryCompress('image/jpeg', 0.8);
+                } else {
+                  reject(new Error('Failed to process image'));
+                }
+                return;
+              }
+              
+              attempts++;
+              
+              // Keep track of the best (smallest) result
+              if (!bestBlob || blob.size < bestBlob.size) {
+                bestBlob = blob;
+                bestFormat = format;
+              }
+              
+              // If we hit target size, use it
+              if (blob.size <= TARGET_SIZE) {
+                resolve(bestBlob);
+                return;
+              }
+              
+              // If we've tried enough and have a result, use the best one
+              if (attempts >= maxAttempts) {
+                resolve(bestBlob);
+                return;
+              }
+              
+              // Try lower quality
+              const newQuality = quality - 0.1;
+              if (newQuality >= 0.3) {
+                tryCompress(format, newQuality);
+              } else if (format === 'image/webp') {
+                // Switch to JPEG if WebP isn't working well
+                tryCompress('image/jpeg', 0.8);
+              } else {
+                resolve(bestBlob);
+              }
+            }, format, quality);
+          };
+          
+          // Start with WebP
+          tryCompress('image/webp', 0.8);
+        };
+        
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = URL.createObjectURL(file);
+      });
+    }
+
+    function validateFileSize(file) {
+      if (file.size > MAX_FILE_SIZE) {
+        fail(`File too large! ${formatFileSize(file.size)} exceeds 2MB limit.`);
+        bgInput.value = ''; // Clear the input
+        fileNameEl.textContent = '';
+        uploadBtn.style.display = 'none';
+        return false;
+      }
+      return true;
+    }
+
+    function validateFileSize(file) {
+      if (file.size > MAX_FILE_SIZE) {
+        fail(`File too large! ${formatFileSize(file.size)} exceeds 2MB limit.`);
+        bgInput.value = ''; // Clear the input
+        fileNameEl.textContent = '';
+        uploadBtn.style.display = 'none';
+        return false;
+      }
+      return true;
+    }
+
+    bgInput.addEventListener('change', async () => {
+      const file = bgInput.files[0];
+      if (file) {
+        if (validateFileSize(file)) {
+          fileNameEl.textContent = `Processing ${file.name} (${formatFileSize(file.size)})...`;
+          uploadBtn.style.display = 'none'; // Hide button during processing
+          
+          try {
+            const processedBlob = await processImage(file);
+            
+            // Store processed blob for upload
+            bgInput.processedFile = processedBlob;
+            
+            const format = processedBlob.type.includes('webp') ? 'WebP' : 'JPEG';
+            fileNameEl.textContent = `Ready: ${file.name} → ${formatFileSize(processedBlob.size)} ${format}`;
+            uploadBtn.style.display = 'inline-flex';
+            statusEl.textContent = ''; // Clear any previous error messages
+          } catch (error) {
+            fail('Failed to process image: ' + error.message);
+            bgInput.value = '';
+            fileNameEl.textContent = '';
+            uploadBtn.style.display = 'none';
+          }
+        }
+      } else {
+        fileNameEl.textContent = '';
+        uploadBtn.style.display = 'none';
+        delete bgInput.processedFile;
+      }
     });
 
     async function call(path) {
@@ -131,17 +311,34 @@
     }
 
     async function uploadBg() {
-      const file = bgInput.files[0];
-      if (!file) { ok('No file selected'); return; }
-      setBusy(true, 'Uploading...');
+      const processedFile = bgInput.processedFile;
+      if (!processedFile) { 
+        fail('No processed file ready'); 
+        return; 
+      }
+
+      setBusy(true, 'Uploading optimized image...');
       try {
         const fd = new FormData();
-        fd.append('bg', file, file.name);
-        const res = await fetch('/upload_bg', { method: 'POST', body: fd });
+        const filename = processedFile.type.includes('webp') ? 'background.webp' : 'background.jpg';
+        fd.append('bg', processedFile, filename);
+        
+        const res = await fetch('/upload_bg', { 
+          method: 'POST', 
+          body: fd,
+          // Optimize for faster uploads
+          cache: 'no-store',
+          keepalive: false,
+          // Don't set Content-Type - let browser set multipart boundary
+        });
+        
         const text = await res.text();
-        // Refresh background immediately
-        document.body.style.backgroundImage = `url('/bg?ts=${Date.now()}')`;
-        (res.ok ? ok : fail)(text || (res.ok ? 'Background updated' : 'Upload error'));
+        if (res.ok) {
+          document.body.style.backgroundImage = `url('/bg?ts=${Date.now()}')`;
+          ok(text || 'Background updated');
+        } else {
+          fail(text || `Upload failed (${res.status})`);
+        }
       } catch (e) {
         fail('Upload error');
       } finally {
@@ -150,12 +347,14 @@
     }
 
     function setBusy(busy, msg = '') {
-      document.querySelectorAll('button, .btn').forEach(b => b.disabled = busy);
+      document.querySelectorAll('button:not(#uploadBtn), .btn').forEach(b => b.disabled = busy);
+      // Don't disable upload button during setBusy - visibility is controlled by file validation
       statusEl.textContent = msg;
       if (!busy && msg) setTimeout(() => statusEl.textContent = '', 1500);
     }
-    function ok(msg)  { statusEl.style.color = '#2c7a2c'; statusEl.textContent = msg; }
-    function fail(msg){ statusEl.style.color = '#b00020'; statusEl.textContent = msg; }
+    function ok(msg) { statusEl.style.color = '#2c7a2c'; statusEl.textContent = msg; }
+    function fail(msg) { statusEl.style.color = '#b00020'; statusEl.textContent = msg; }
   </script>
 </body>
+
 </html>
