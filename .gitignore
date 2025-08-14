@@ -1,0 +1,23 @@
+# PlatformIO build output
+.pio/
+
+# VS Code workspace cache/config (safe to ignore)
+.vscode/
+
+# Common C/C++ indexers/caches
+.ccls-cache/
+ipch/
+.vs/
+.cmake/
+
+# Binaries / maps
+*.bin
+*.elf
+*.map
+
+# OS clutter
+.DS_Store
+Thumbs.db
+
+# Secrets (use an example file in the repo)
+include/credentials.hpp
