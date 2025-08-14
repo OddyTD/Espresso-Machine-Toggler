@@ -1,43 +1,37 @@
 <!DOCTYPE html>
 <html>
-
 <head>
   <meta charset="utf-8" />
   <title>Espresso Controls</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Preload background served by /bg -->
+  <link rel="preload" as="image" href="/bg" fetchpriority="high" />
+
   <style>
-    :root {
-      --gap: 12px;
-    }
+    :root { --gap: 12px; --page-pad: clamp(12px, 4vw, 24px); }
 
-    /* Make the background fill the viewport without tiling */
-    html,
-    body {
-      height: 100%;
-    }
-
+    html, body { height: 100%; }
     body {
       margin: 0;
+      padding: var(--page-pad);
       font-family: Arial, sans-serif;
-      background: url('/bg.webp') center / cover no-repeat;
+      background: url('/bg') center / cover no-repeat;
     }
 
     .container {
       max-width: 520px;
-      margin: 24px auto;
-      background: #fff;
+      margin: 0 auto;
+      background: rgba(255, 255, 255, 0.65);
       padding: 24px;
       border-radius: 12px;
-      box-shadow: 0 4px 10px rgba(0, 0, 0, .08);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .15);
+      backdrop-filter: saturate(120%) blur(6px);
+      -webkit-backdrop-filter: saturate(120%) blur(6px);
+      border: 1px solid rgba(255, 255, 255, 0.6);
     }
 
-    /* centered title */
-    h1 {
-      margin: 0 0 18px;
-      font-size: 22px;
-      color: #333;
-      text-align: center;
-    }
+    h1 { margin: 0 0 18px; font-size: 22px; color: #333; text-align: center; }
 
     .grid {
       display: grid;
@@ -45,35 +39,51 @@
       gap: var(--gap);
     }
 
-    button {
-      padding: 14px;
+    /* Uniform button style (real buttons + label “btn”) — all bold */
+    button, .btn {
+      padding: 14px 16px;
       border: 0;
       border-radius: 10px;
       cursor: pointer;
       background: #007bff;
       color: #fff;
       font-size: 16px;
-      font-weight: 700;
-      /* bold text */
+      font-weight: 0;
+      line-height: 1.25;
+      min-height: 48px;
+      width: 100%;
+      box-sizing: border-box;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       transition: filter .15s ease, transform .02s;
-    }
-
-    button:active {
-      transform: translateY(1px);
-    }
-
-    /* centered status text */
-    #status {
-      margin-top: 14px;
-      min-height: 22px;
-      font-weight: bold;
-      color: #2c7a2c;
       text-align: center;
     }
+    button:active, .btn:active { transform: translateY(1px); }
 
-    .full {
-      grid-column: 1 / -1;
+    /* Section divider between controls and background uploader */
+    .section {
+      margin-top: calc(var(--gap) * 2);
+      padding-top: calc(var(--gap) * 1.5);
+      border-top: 1px solid rgba(0, 0, 0, 0.08);
     }
+
+    /* Centered, stacked uploader controls */
+    .uploader {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--gap);
+    }
+    #bgFile { display: none; }        /* hide native input; label will trigger it */
+    .file-hint {
+      font-size: 12px;
+      color: #333;
+      text-align: center;
+      opacity: 0.9;
+    }
+
+    .full { grid-column: 1 / -1; }
   </style>
 </head>
 
@@ -87,11 +97,25 @@
       <button onclick="call('/jog_reverse')">Jog Backward</button>
     </div>
 
+    <!-- Separator + uploader -->
+    <div class="section uploader">
+      <input type="file" id="bgFile" accept="image/webp,image/jpeg" />
+      <label for="bgFile" class="btn">Choose Background</label>
+      <button onclick="uploadBg()">Set Background</button>
+      <div id="fileName" class="file-hint"></div>
+    </div>
+
     <div id="status"></div>
   </div>
 
   <script>
     const statusEl = document.getElementById('status');
+    const fileNameEl = document.getElementById('fileName');
+    const bgInput = document.getElementById('bgFile');
+
+    bgInput.addEventListener('change', () => {
+      fileNameEl.textContent = bgInput.files[0] ? bgInput.files[0].name : '';
+    });
 
     async function call(path) {
       setBusy(true, 'Working...');
@@ -106,14 +130,32 @@
       }
     }
 
+    async function uploadBg() {
+      const file = bgInput.files[0];
+      if (!file) { ok('No file selected'); return; }
+      setBusy(true, 'Uploading...');
+      try {
+        const fd = new FormData();
+        fd.append('bg', file, file.name);
+        const res = await fetch('/upload_bg', { method: 'POST', body: fd });
+        const text = await res.text();
+        // Refresh background immediately
+        document.body.style.backgroundImage = `url('/bg?ts=${Date.now()}')`;
+        (res.ok ? ok : fail)(text || (res.ok ? 'Background updated' : 'Upload error'));
+      } catch (e) {
+        fail('Upload error');
+      } finally {
+        setBusy(false);
+      }
+    }
+
     function setBusy(busy, msg = '') {
-      document.querySelectorAll('button').forEach(b => b.disabled = busy);
+      document.querySelectorAll('button, .btn').forEach(b => b.disabled = busy);
       statusEl.textContent = msg;
       if (!busy && msg) setTimeout(() => statusEl.textContent = '', 1500);
     }
-    function ok(msg) { statusEl.style.color = '#2c7a2c'; statusEl.textContent = msg; }
-    function fail(msg) { statusEl.style.color = '#b00020'; statusEl.textContent = msg; }
+    function ok(msg)  { statusEl.style.color = '#2c7a2c'; statusEl.textContent = msg; }
+    function fail(msg){ statusEl.style.color = '#b00020'; statusEl.textContent = msg; }
   </script>
 </body>
-
 </html>
