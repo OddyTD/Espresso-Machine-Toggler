@@ -1,12 +1,22 @@
 // include/globals.hpp
 #pragma once
-#include <config.hpp> // D0..D8
 #include "eeprom.hpp"
 #include "messages.hpp"
 #include "servo_action.hpp"
 
+// ===== Pin definitions =====
+//#define D0 16
+//#define D1 5
+//#define D2 4
+//#define D3 0
+#define D4 2
+//#define D5 14
+//#define D6 12
+//#define D7 13
+//#define D8 15
+
 // ===== Pins & timing =====
-inline constexpr int PIN_PWM = D5; // ESP8266: D5 = GPIO14
+inline constexpr int PIN_PWM = D4;
 inline constexpr int MOVE_MS = 250;
 inline constexpr int JOG_MOVE_MS = 25;
 
