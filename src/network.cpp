@@ -11,6 +11,8 @@ static const size_t BG_MAX_BYTES = 500 * 1024; // 500 KB (safer for ESP8266)
 
 WebServerConfig::WebServerConfig() : server(80) {}
 
+MQTTConfig::MQTTConfig() : mqtt(wifi) {}
+
 void NetworkConfig::ConfigWiFi(const char *ssid, const char *password)
 {
   WiFi.mode(WIFI_STA);
@@ -18,9 +20,9 @@ void NetworkConfig::ConfigWiFi(const char *ssid, const char *password)
   WiFi.setAutoReconnect(true);
   WiFi.begin(ssid, password);
 
-  Serial.print(F("\n[WIFI] Connexion en cours"));
+  Serial.print(F("\n[WIFI/MESSAGE] Connection in progress"));
   const unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - start) < 5000UL)
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < 10000UL)
   {
     delay(500);
     Serial.print(F("."));
@@ -28,13 +30,13 @@ void NetworkConfig::ConfigWiFi(const char *ssid, const char *password)
 
   if (WiFi.status() == WL_CONNECTED)
   {
-    Serial.println(F("\n[WIFI] Connecté ✅"));
-    Serial.print(F("[INFO] Adresse IP: "));
+    Serial.println(F("\n[WIFI/MESSAGE] Connected ✅"));
+    Serial.print(F("[WIFI/INFO] IP Address: "));
     Serial.println(WiFi.localIP());
   }
   else
   {
-    Serial.println(F("\n[ERREUR] Échec de connexion."));
+    Serial.println(F("\n[WIFI/ERREUR] Connection failed."));
   }
 }
 
@@ -42,26 +44,26 @@ void WebServerConfig::begin()
 {
   if (!LittleFS.begin())
   {
-    Serial.println(F("[LITTLEFS] init failed!"));
+    Serial.println(F("[LITTLEFS/ERREUR] Initialization failed."));
     return;
   }
 
   // --- 1) Dynamic control endpoints FIRST ---
   server.on("/espresso", HTTP_GET, [this]()
             {
-    Serial.println(F("[HTTP] /espresso"));
+    Serial.println(F("[HTTP/INFO] /espresso"));
     servo.clickEspresso();
     server.send(200, "text/plain", "Espresso toggle"); });
 
   server.on("/jog_forward", HTTP_GET, [this]()
             {
-    Serial.println(F("[HTTP] /jog_forward"));
+    Serial.println(F("[HTTP/INFO] /jog_forward"));
     servo.forwardMove(JOG_MOVE_MS);
     server.send(200, "text/plain", "Jog forward"); });
 
   server.on("/jog_reverse", HTTP_GET, [this]()
             {
-    Serial.println(F("[HTTP] /jog_reverse"));
+    Serial.println(F("[HTTP/INFO] /jog_reverse"));
     servo.reverseMove(JOG_MOVE_MS);
     server.send(200, "text/plain", "Jog reverse"); });
 
@@ -198,10 +200,77 @@ void WebServerConfig::begin()
     server.send(404, "text/plain", "Not found: " + server.uri()); });
 
   server.begin();
-  Serial.println(F("[WEBSERVER] Web Server started! Upload limit: 500KB"));
+  Serial.println(F("[WEBSERVER/MESSAGE] Web server started on port 80"));
 }
 
-void WebServerConfig::handleClient()
-{
+void WebServerConfig::handleClient() {
   server.handleClient();
+}
+
+void MQTTConfig::begin()
+{
+  mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  mqtt.setCallback(onMessage);
+  if (WiFi.status() == WL_CONNECTED)
+    reconnect();
+}
+
+void MQTTConfig::loop()
+{
+  if (!mqtt.connected())
+    reconnect();
+  mqtt.loop();
+}
+
+void MQTTConfig::publishState(bool on)
+{
+  if (!mqtt.connected())
+    return;
+  mqtt.publish(TOPIC_STAT, on ? "ON" : "OFF", true);
+}
+
+void MQTTConfig::reconnect()
+{
+  Serial.print(F("[MQTT/MESSAGE] Connection in progress"));
+
+  const unsigned long start = millis();
+  while (!mqtt.connected() && WiFi.status() == WL_CONNECTED && (millis() - start) < 10000UL)
+  {
+    // tentative de connexion
+    String clientId = "ESP8266_" + String(ESP.getChipId(), HEX);
+
+    if (mqtt.connect(clientId.c_str(),
+                     MQTT_USER, MQTT_PASS,
+                     TOPIC_STAT, 1, true, "OFF"))
+    {
+      // succès
+      Serial.println(F("\n[MQTT/MESSAGE] Connected ✅"));
+      mqtt.subscribe(TOPIC_CMD);
+      publishState(true);
+      return;
+    }
+    else
+    {
+      // pas encore connecté → afficher un point et attendre
+      Serial.print(F("."));
+      delay(500);
+      yield();
+    }
+  }
+
+  // si on sort de la boucle sans être connecté
+  if (!mqtt.connected())
+  {
+    Serial.println(F("\n[MQTT/ERREUR] Connection failed."));
+  }
+}
+
+void MQTTConfig::onMessage(char *topic, uint8_t *payload, unsigned int length)
+{
+  Serial.print("[MQTT] ");
+  Serial.print(topic);
+  Serial.print(" = ");
+  for (unsigned int i = 0; i < length; ++i)
+    Serial.write(payload[i]);
+  Serial.println();
 }

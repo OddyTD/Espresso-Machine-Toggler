@@ -6,6 +6,7 @@
 calibration cal;
 NetworkConfig net;
 WebServerConfig web;
+MQTTConfig mqtt;
 
 void servoControl()
 {
@@ -18,16 +19,16 @@ void servoControl()
     switch (c)
     {
     case '=':
-      Serial.println(F("[SERVO] Jog forward"));
+      Serial.println(F("[SERVO/MESSAGE] (+) Jogging forward"));
       servo.forwardMove(JOG_MOVE_MS);
       break;
     case '-':
-      Serial.println(F("[SERVO] Jog reverse"));
+      Serial.println(F("[SERVO/MESSAGE] (-) Jogging backward"));
       servo.reverseMove(JOG_MOVE_MS);
       break;
     case 'e':
     case 'E':
-      Serial.println(F("[SERVO] Espresso click"));
+      Serial.println(F("[SERVO/MESSAGE] (e) Clicking Espresso"));
       servo.clickEspresso();
       break;
     case 'c':
@@ -47,9 +48,9 @@ void servoControl()
       msg.showMenu();
       break;
     default:
-      Serial.print(F("Invalid option: '"));
+      Serial.print(F("[ERREUR] Invalid option: '"));
       Serial.print(c);
-      Serial.println(F("'. Press 'h' for help."));
+      Serial.println(F("' Press 'h' for help."));
       break;
     }
   }
@@ -59,6 +60,7 @@ void setup()
 {
   Serial.begin(115200);
   net.ConfigWiFi();
+  mqtt.begin();
   web.begin();
   mem.begin();
   mem.load();
@@ -67,6 +69,7 @@ void setup()
 void loop()
 {
   msg.showMenuOnce();
+  mqtt.loop();
   web.handleClient();
   servoControl();
   yield();
